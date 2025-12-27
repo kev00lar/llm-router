@@ -1,70 +1,130 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>LLM Router Admin</title>
+    <title>LLM Router Admin Dashboard</title>
     <style>
-        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
-        .btn { background: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
-        .btn-save { background: #28a745; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background: #f0f2f5; color: #333; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 25px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .stat-box { background: #e9ecef; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-value { font-size: 1.5em; font-weight: bold; color: #007bff; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: left; }
+        th { background: #f8f9fa; }
+        .btn { padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; font-weight: bold; transition: opacity 0.2s; }
+        .btn:hover { opacity: 0.8; }
+        .btn-save { background: #28a745; color: white; }
+        .btn-reset { background: #dc3545; color: white; float: right; }
+        input[type="text"], input[type="number"] { padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 90%; }
     </style>
 </head>
 <body>
     <h1>LLM Router Management</h1>
-    
+
     <div class="card">
-        <h2>Live Configuration</h2>
+        <h2>System Health Summary</h2>
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div>Router Status</div>
+                <div id="routerStatus" class="stat-value">Checking...</div>
+            </div>
+            <div class="stat-box">
+                <div>Active Providers</div>
+                <div id="activeCount" class="stat-value">0</div>
+            </div>
+            <div class="stat-box">
+                <div>Last Sync</div>
+                <div id="lastSync" class="stat-value">-</div>
+            </div>
+        </div>
+        <button class="btn btn-reset" onclick="resetMetrics()">Reset Performance Counters</button>
+    </div>
+
+    <div class="card">
+        <h2>Provider Configuration</h2>
         <table id="providerTable">
             <thead>
                 <tr>
-                    <th>ID</th>
+                    <th>Provider ID</th>
                     <th>URL</th>
                     <th>Weight</th>
                     <th>Active</th>
                 </tr>
             </thead>
             <tbody>
-                </tbody>
+                <tr><td colspan="4" style="text-align:center;">Loading configuration...</td></tr>
+            </tbody>
         </table>
         <br>
         <button class="btn btn-save" onclick="saveConfig()">Apply Changes (Hot Reload)</button>
     </div>
 
     <script>
-        // Example initial data - in production, fetch this from a GET /admin/config endpoint
-        let providers = [
-            {id: "mock-a", url: "http://mock-a:8080", weight: 80, active: true},
-            {id: "mock-b", url: "http://mock-b:8080", weight: 20, active: true}
-        ];
+        let providers = [];
+
+        // Fetch Stats and Initial Config
+        async function fetchState() {
+            try {
+                const response = await fetch('/admin/stats');
+                const data = await response.json();
+                
+                document.getElementById('routerStatus').innerText = data.status.toUpperCase();
+                document.getElementById('activeCount').innerText = data.active_providers;
+                document.getElementById('lastSync').innerText = new Date().toLocaleTimeString();
+                
+                // Only populate table if it's the first load
+                if (providers.length === 0) {
+                    providers = data.provider_details;
+                    renderTable();
+                }
+            } catch (err) {
+                document.getElementById('routerStatus').innerText = "ERROR";
+                console.error("Failed to fetch state:", err);
+            }
+        }
 
         function renderTable() {
             const tbody = document.querySelector("#providerTable tbody");
             tbody.innerHTML = providers.map((p, i) => `
                 <tr>
-                    <td>${p.id}</td>
+                    <td><strong>${p.id}</strong></td>
                     <td><input type="text" value="${p.url}" onchange="updateVal(${i}, 'url', this.value)"></td>
-                    <td><input type="number" value="${p.weight}" onchange="updateVal(${i}, 'weight', this.value)"></td>
+                    <td><input type="number" step="0.1" value="${p.weight}" onchange="updateVal(${i}, 'weight', this.value)"></td>
                     <td><input type="checkbox" ${p.active ? 'checked' : ''} onchange="updateVal(${i}, 'active', this.checked)"></td>
                 </tr>
             `).join('');
         }
 
         function updateVal(index, key, val) {
-            providers[index][key] = key === 'weight' ? parseFloat(val) : val;
+            if (key === 'weight') providers[index][key] = parseFloat(val);
+            else if (key === 'active') providers[index][key] = val;
+            else providers[index][key] = val;
         }
 
+        // Management API: Update Config
         async function saveConfig() {
-            const response = await fetch('http://localhost:3000/admin/config', {
+            const response = await fetch('/admin/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(providers)
             });
-            if (response.ok) alert("Configuration updated successfully!");
+            if (response.ok) {
+                alert("Configuration updated successfully!");
+                fetchState();
+            }
         }
 
-        renderTable();
+        // Management API: Reset Metrics
+        async function resetMetrics() {
+            if (confirm("Are you sure you want to clear all prometheus counters?")) {
+                const response = await fetch('/admin/metrics/reset', { method: 'POST' });
+                if (response.ok) alert("Metrics cleared!");
+            }
+        }
+
+        // Initial Load and Auto-refresh
+        fetchState();
+        setInterval(fetchState, 5000);
     </script>
 </body>
 </html>
