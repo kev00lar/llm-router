@@ -26,12 +26,19 @@ func (c *RouterConfig) UpdateProviders(newProviders []Provider) {
 	oldCount := len(c.Providers)
 	c.Providers = newProviders
 	log.Printf("[INFO] Providers updated: old_count=%d, new_count=%d", oldCount, len(newProviders))
-
-	for _, p := range newProviders {
-		log.Printf("[INFO] Provider registered: id=%s, url=%s, weight=%.1f, active=%v", p.ID, p.URL, p.Weight, p.Active)
-	}
 }
 
+// GetProviders returns a thread-safe copy for the Admin Stats API
+func (c *RouterConfig) GetProviders() []Provider {
+	c.RLock()
+	defer c.RUnlock()
+	
+	dst := make([]Provider, len(c.Providers))
+	copy(dst, c.Providers)
+	return dst
+}
+
+// GetProvider selects a provider based on weighted random selection
 func (c *RouterConfig) GetProvider() *Provider {
 	c.RLock()
 	defer c.RUnlock()
@@ -46,18 +53,15 @@ func (c *RouterConfig) GetProvider() *Provider {
 	}
 
 	if len(active) == 0 {
-		log.Println("[WARN] No active providers available for routing")
 		return nil
 	}
 
 	r := rand.Float64() * totalWeight
-	for _, p := range active {
-		r -= p.Weight
+	for i := range active {
+		r -= active[i].Weight
 		if r <= 0 {
-			log.Printf("[DEBUG] Provider selected: id=%s, weight=%.1f, total_weight=%.1f", p.ID, p.Weight, totalWeight)
-			return &p
+			return &active[i]
 		}
 	}
-	log.Printf("[DEBUG] Fallback to first provider: id=%s", active[0].ID)
 	return &active[0]
 }

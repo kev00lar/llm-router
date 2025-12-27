@@ -15,22 +15,37 @@ import (
 )
 
 var (
-	// Metric for tracking total requests per provider and result status
-	httpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	HttpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_router_requests_total",
 		Help: "Total number of requests handled by the router",
 	}, []string{"provider", "status"})
-
-	// Metric for tracking request latency
-	requestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name: "llm_router_request_duration_seconds",
-		Help: "Latency of requests per provider",
+	RequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_router_request_duration_seconds",
+		Help:    "Latency of requests per provider",
+		Buckets: prometheus.DefBuckets,
 	}, []string{"provider"})
 )
 
 type RouterHandler struct {
 	Cfg    *config.RouterConfig
 	Client *http.Client
+}
+
+// ResetMetrics unregisters and re-initializes metrics to zero them out
+func (h *RouterHandler) ResetMetrics() {
+	prometheus.Unregister(HttpRequestsTotal)
+	prometheus.Unregister(RequestDuration)
+
+	HttpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_router_requests_total",
+		Help: "Total number of requests handled by the router",
+	}, []string{"provider", "status"})
+
+	RequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_router_request_duration_seconds",
+		Help:    "Latency of requests per provider",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"provider"})
 }
 
 func (h *RouterHandler) HandleChat(c *gin.Context) {
@@ -43,7 +58,6 @@ func (h *RouterHandler) HandleChat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
 	}
-	log.Printf("[DEBUG] Request body size: %d bytes from %s", len(bodyBytes), clientIP)
 
 	maxAttempts := 3
 	var lastErr error
@@ -51,10 +65,11 @@ func (h *RouterHandler) HandleChat(c *gin.Context) {
 	for i := 0; i < maxAttempts; i++ {
 		provider := h.Cfg.GetProvider()
 		if provider == nil {
-			log.Printf("[WARN] Attempt %d/%d: No provider available from %s", i+1, maxAttempts, clientIP)
+			log.Printf("[WARN] Attempt %d/%d: No provider available", i+1, maxAttempts)
 			continue
 		}
-		log.Printf("[INFO] Attempt %d/%d: Routing request to provider=%s, url=%s from client=%s", i+1, maxAttempts, provider.ID, provider.URL, clientIP)
+
+		log.Printf("[INFO] Attempt %d/%d: Routing to %s", i+1, maxAttempts, provider.ID)
 
 		start := time.Now()
 		fullURL := provider.URL + "/v1/chat/completions"
@@ -64,13 +79,14 @@ func (h *RouterHandler) HandleChat(c *gin.Context) {
 		resp, err := h.Client.Do(req)
 		duration := time.Since(start)
 
+		// Check for Happy Flow (Success)
 		if err == nil && resp.StatusCode < 500 {
 			// Record Success Metrics
-			requestDuration.WithLabelValues(provider.ID).Observe(duration.Seconds())
-			httpRequestsTotal.WithLabelValues(provider.ID, "success").Inc()
+			RequestDuration.WithLabelValues(provider.ID).Observe(duration.Seconds())
+			HttpRequestsTotal.WithLabelValues(provider.ID, "success").Inc()
 
-			log.Printf("[INFO] Request successful: provider=%s, status=%d, duration=%.2fms, client=%s",
-				provider.ID, resp.StatusCode, float64(duration.Milliseconds()), clientIP)
+			log.Printf("[INFO] Success: provider=%s, status=%d, duration=%dms",
+				provider.ID, resp.StatusCode, duration.Milliseconds())
 
 			defer resp.Body.Close()
 			for k, v := range resp.Header {
@@ -81,26 +97,23 @@ func (h *RouterHandler) HandleChat(c *gin.Context) {
 			return
 		}
 
-		// Record Error Metric
-		httpRequestsTotal.WithLabelValues(provider.ID, "error").Inc()
+		// Record Resilient Flow (Error/Failover)
+		HttpRequestsTotal.WithLabelValues(provider.ID, "error").Inc()
+
 		if err != nil {
 			lastErr = err
-			log.Printf("[ERROR] Provider request failed: provider=%s, attempt=%d/%d, error=%v, duration=%.2fms, client=%s",
-				provider.ID, i+1, maxAttempts, err, float64(duration.Milliseconds()), clientIP)
+			log.Printf("[ERROR] Attempt %d failed: %v", i+1, err)
 		} else {
 			lastErr = fmt.Errorf("provider %s returned %d", provider.ID, resp.StatusCode)
-			log.Printf("[WARN] Provider returned error status: provider=%s, status=%d, attempt=%d/%d, duration=%.2fms, client=%s",
-				provider.ID, resp.StatusCode, i+1, maxAttempts, float64(duration.Milliseconds()), clientIP)
+			log.Printf("[WARN] Attempt %d failed: status %d", i+1, resp.StatusCode)
 			resp.Body.Close()
 		}
 
 		if i < maxAttempts-1 {
-			log.Printf("[INFO] Retrying request after 50ms: attempt=%d/%d, client=%s", i+1, maxAttempts, clientIP)
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
 
-	log.Printf("[ERROR] All providers exhausted after %d attempts, client=%s, last_error=%v", maxAttempts, clientIP, lastErr)
 	c.JSON(http.StatusServiceUnavailable, gin.H{
 		"error":   "All providers failed",
 		"details": lastErr.Error(),

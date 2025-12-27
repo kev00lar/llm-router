@@ -14,6 +14,7 @@ import (
 	"llm-router/internal/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -65,6 +66,30 @@ func main() {
 		Addr:    ":3000",
 		Handler: r,
 	}
+
+	r.GET("/admin/stats", func(c *gin.Context) {
+		// Collect the current provider list
+		providers := cfg.GetProviders()
+
+		// Create a simplified view for the Admin UI
+		stats := gin.H{
+			"status":           "healthy",
+			"active_providers": len(providers),
+			"server_time":      time.Now().Format(time.RFC3339),
+			"provider_details": providers,
+		}
+
+		c.JSON(http.StatusOK, stats)
+	})
+
+	// Endpoint to clear/reset metrics without restarting
+	r.POST("/admin/metrics/reset", func(c *gin.Context) {
+		prometheus.Unregister(handler.HttpRequestsTotal)
+		prometheus.Unregister(handler.RequestDuration)
+
+		// The promauto calls in router.go will re-initialize them on next use
+		c.JSON(http.StatusOK, gin.H{"message": "Metrics reset successfully"})
+	})
 
 	go func() {
 		log.Printf("[INFO] HTTP server listening on %s", srv.Addr)
