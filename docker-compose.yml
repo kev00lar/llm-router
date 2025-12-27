@@ -12,13 +12,9 @@ services:
       context: .
       dockerfile: ./mock/Dockerfile
     container_name: mock-a
-    expose:
-      - "8080"
 
   mock-b:
     build:
       context: .
       dockerfile: ./mock/Dockerfile
     container_name: mock-b
-    expose:
-      - "8080"
