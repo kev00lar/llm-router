@@ -15,13 +15,39 @@ The architecture consists of three core layers:
 
 ```mermaid
 graph TD
-    A[Client Request] -->|/v1/chat/completions| B[Router Core]
-    B -->|Rate Limit Check| C{Middleware}
-    C -->|Fail 429| A
-    C -->|Pass| D[Weighted Selection]
-    D -->|80%| E[Mock Provider A]
-    D -->|20%| F[Mock Provider B]
-    E -->|5xx Error| D
-    D -->|Failover/Retry| F
-    B -->|Metrics| G[Prometheus /metrics]
-    H[Admin API] -->|Update Weights| B
+    subgraph Client_Layer [Client Layer]
+        User[External Client]
+    end
+
+    subgraph Router_Service [Port 3000]
+        RC[Router Core]
+        MW{Rate Limit Middleware}
+        WS[Weighted Selector]
+        MET[Prometheus Metrics]
+    end
+
+    subgraph Backend_Providers [LLM Backends]
+        P1[Mock Provider A]
+        P2[Mock Provider B]
+    end
+
+    %% Path 1: Rate Limit Rejection
+    User -->|POST /chat| RC
+    RC --> MW
+    MW -- |Tokens Exhausted| --> UserRejection[HTTP 429]
+    UserRejection --> User
+    MW -.-> |Record 429| MET
+
+    %% Path 2: Happy Flow (Provider A)
+    MW -- |Tokens Available| --> WS
+    WS -->|Primary Attempt| P1
+    P1 -- |Success 200| --> RC
+    RC -.-> |Record Success A| MET
+    RC -->|Return Response| User
+
+    %% Path 3: Resilient Flow (Failover)
+    P1 -.->|5xx Error| WS
+    WS -.-> |Record Error A| MET
+    WS -->|Retry| P2
+    P2 -- |Success 200| --> RC
+    RC -.-> |Record Success B| MET
