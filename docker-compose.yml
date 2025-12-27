@@ -1,0 +1,24 @@
+services:
+  router:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mock-a
+      - mock-b
+
+  mock-a:
+    build:
+      context: .
+      dockerfile: ./mock/Dockerfile
+    container_name: mock-a
+    expose:
+      - "8080"
+
+  mock-b:
+    build:
+      context: .
+      dockerfile: ./mock/Dockerfile
+    container_name: mock-b
+    expose:
+      - "8080"

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LLM Router Admin</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
+        .btn { background: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
+        .btn-save { background: #28a745; }
+    </style>
+</head>
+<body>
+    <h1>LLM Router Management</h1>
+    
+    <div class="card">
+        <h2>Live Configuration</h2>
+        <table id="providerTable">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>URL</th>
+                    <th>Weight</th>
+                    <th>Active</th>
+                </tr>
+            </thead>
+            <tbody>
+                </tbody>
+        </table>
+        <br>
+        <button class="btn btn-save" onclick="saveConfig()">Apply Changes (Hot Reload)</button>
+    </div>
+
+    <script>
+        // Example initial data - in production, fetch this from a GET /admin/config endpoint
+        let providers = [
+            {id: "mock-a", url: "http://mock-a:8080", weight: 80, active: true},
+            {id: "mock-b", url: "http://mock-b:8080", weight: 20, active: true}
+        ];
+
+        function renderTable() {
+            const tbody = document.querySelector("#providerTable tbody");
+            tbody.innerHTML = providers.map((p, i) => `
+                <tr>
+                    <td>${p.id}</td>
+                    <td><input type="text" value="${p.url}" onchange="updateVal(${i}, 'url', this.value)"></td>
+                    <td><input type="number" value="${p.weight}" onchange="updateVal(${i}, 'weight', this.value)"></td>
+                    <td><input type="checkbox" ${p.active ? 'checked' : ''} onchange="updateVal(${i}, 'active', this.checked)"></td>
+                </tr>
+            `).join('');
+        }
+
+        function updateVal(index, key, val) {
+            providers[index][key] = key === 'weight' ? parseFloat(val) : val;
+        }
+
+        async function saveConfig() {
+            const response = await fetch('http://localhost:3000/admin/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(providers)
+            });
+            if (response.ok) alert("Configuration updated successfully!");
+        }
+
+        renderTable();
+    </script>
+</body>
+</html>
