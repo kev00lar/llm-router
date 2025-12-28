@@ -1,9 +1,13 @@
 services:
   router:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    env_file: .env
     depends_on:
+      - redis
       - mock-a
       - mock-b
 
@@ -12,9 +16,19 @@ services:
       context: .
       dockerfile: ./mock/Dockerfile
     container_name: mock-a
+    expose:
+      - "8080"
 
   mock-b:
     build:
       context: .
       dockerfile: ./mock/Dockerfile
     container_name: mock-b
+    expose:
+      - "8080"
+
+  redis:
+    image: redis:alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"

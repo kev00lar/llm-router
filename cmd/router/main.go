@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -18,100 +19,121 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// getEnv is a helper to read environment variables with a default fallback
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("[INFO] Starting LLM Router service...")
 
+	// 1. Load Configuration from Environment Variables
+	weightA, _ := strconv.ParseFloat(getEnv("PROVIDER_A_WEIGHT", "80.0"), 64)
+	weightB, _ := strconv.ParseFloat(getEnv("PROVIDER_B_WEIGHT", "20.0"), 64)
+
 	cfg := &config.RouterConfig{
 		Providers: []config.Provider{
-			{ID: "mock-a", URL: "http://mock-a:8080", Weight: 80, Active: true},
-			{ID: "mock-b", URL: "http://mock-b:8080", Weight: 20, Active: true},
+			{
+				ID:     getEnv("PROVIDER_A_ID", "mock-a"),
+				URL:    getEnv("PROVIDER_A_URL", "http://mock-a:8080"),
+				Weight: weightA,
+				Active: true,
+			},
+			{
+				ID:     getEnv("PROVIDER_B_ID", "mock-b"),
+				URL:    getEnv("PROVIDER_B_URL", "http://mock-b:8080"),
+				Weight: weightB,
+				Active: true,
+			},
 		},
 	}
 
-	log.Printf("[INFO] Router initialized with %d providers", len(cfg.Providers))
-	for _, p := range cfg.Providers {
-		log.Printf("[INFO] Provider configured: id=%s, url=%s, weight=%.1f, active=%v", p.ID, p.URL, p.Weight, p.Active)
-	}
+	// 2. Initialize Distributed Rate Limiter (Redis-backed for K8s)
+	redisURL := getEnv("REDIS_URL", "redis:6379")
+	limitRPS, _ := strconv.ParseFloat(getEnv("GLOBAL_LIMIT", "5.0"), 64)
+	burst, _ := strconv.Atoi(getEnv("GLOBAL_BURST", "5"))
+	
+	limiter := middleware.NewGlobalLimiter(redisURL, limitRPS, burst)
 
+	// 3. Setup Router and Handlers
 	r := gin.Default()
-	r.StaticFile("/admin-ui", "./admin/index.html")
-	limiter := middleware.NewRateLimiter()
+
 	routerHandler := &handler.RouterHandler{
 		Cfg:    cfg,
 		Client: &http.Client{Timeout: 10 * time.Second},
 	}
 
-	// 1. Observability: Metrics endpoint for Prometheus scraping
+	// --- ROUTES ---
+
+	// A. Observability: Metrics endpoint for Prometheus
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	// 2. Management: Admin API for Hot Reload of configurations
-	r.POST("/admin/config", func(c *gin.Context) {
-		var newProviders []config.Provider
-		if err := c.ShouldBindJSON(&newProviders); err != nil {
-			log.Printf("[ERROR] Failed to parse config update request from %s: %v", c.ClientIP(), err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		log.Printf("[INFO] Received config update request from %s with %d providers", c.ClientIP(), len(newProviders))
-		cfg.UpdateProviders(newProviders)
-		log.Printf("[INFO] Configuration successfully updated with %d providers", len(newProviders))
-		c.JSON(http.StatusOK, gin.H{"message": "Configuration updated successfully"})
-	})
-
-	// 3. Core LLM Routing
-	r.POST("/v1/chat/completions", limiter.GinLimit(), routerHandler.HandleChat)
-
-	srv := &http.Server{
-		Addr:    ":3000",
-		Handler: r,
-	}
-
+	// B. Management API: Specific routes MUST come before Static wildcards
+	// These provide data to the Admin UI
 	r.GET("/admin/stats", func(c *gin.Context) {
-		// Collect the current provider list
 		providers := cfg.GetProviders()
-
-		// Create a simplified view for the Admin UI
-		stats := gin.H{
+		c.JSON(http.StatusOK, gin.H{
 			"status":           "healthy",
 			"active_providers": len(providers),
 			"server_time":      time.Now().Format(time.RFC3339),
 			"provider_details": providers,
-		}
-
-		c.JSON(http.StatusOK, stats)
+		})
 	})
 
-	// Endpoint to clear/reset metrics without restarting
+	r.POST("/admin/config", func(c *gin.Context) {
+		var newProviders []config.Provider
+		if err := c.ShouldBindJSON(&newProviders); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		cfg.UpdateProviders(newProviders)
+		c.JSON(http.StatusOK, gin.H{"message": "Configuration updated successfully"})
+	})
+
 	r.POST("/admin/metrics/reset", func(c *gin.Context) {
 		prometheus.Unregister(handler.HttpRequestsTotal)
 		prometheus.Unregister(handler.RequestDuration)
-
-		// The promauto calls in router.go will re-initialize them on next use
 		c.JSON(http.StatusOK, gin.H{"message": "Metrics reset successfully"})
 	})
 
+	// C. Static UI: Served at /dashboard to avoid prefix conflicts with /admin API
+	r.Static("/dashboard", "./admin")
+
+	// D. Core LLM Routing with Global Rate Limiting
+	r.POST("/v1/chat/completions", limiter.GinLimit(), routerHandler.HandleChat)
+
+	// --- SERVER STARTUP & SHUTDOWN ---
+
+	port := getEnv("PORT", "3000")
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
+	}
+
 	go func() {
-		log.Printf("[INFO] HTTP server listening on %s", srv.Addr)
-		log.Println("[INFO] Endpoints available: GET /metrics, POST /admin/config, POST /v1/chat/completions")
+		log.Printf("[INFO] HTTP server listening on :%s", port)
+		log.Printf("[INFO] Admin UI available at http://localhost:%s/dashboard", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("[FATAL] Failed to start HTTP server: %v", err)
+			log.Fatalf("[FATAL] Failed to start server: %v", err)
 		}
 	}()
 
+	// Signal handling for graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-	log.Printf("[INFO] Received signal %v, initiating graceful shutdown...", sig)
+	<-quit
 
+	log.Println("[INFO] Shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	log.Println("[INFO] Closing active connections...")
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("[ERROR] Forced shutdown due to error: %v", err)
-		os.Exit(1)
+		log.Fatalf("[FATAL] Server forced to shutdown: %v", err)
 	}
 
-	log.Println("[INFO] Server shutdown completed successfully")
+	log.Println("[INFO] Server exiting")
 }

@@ -1,74 +1,80 @@
 package middleware
 
 import (
+	"context"
 	"log"
 	"net/http"
-	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/time/rate"
+	"github.com/go-redis/redis/v8"
 )
 
-type RateLimiter struct {
-	global *rate.Limiter
-	keys   map[string]*rate.Limiter
-	mu     sync.Mutex
+type RedisLimiter struct {
+	client *redis.Client
+	limit  int64
+	burst  int
 }
 
-// NewRateLimiter initializes a global limit and a map for per-API-key limits
-func NewRateLimiter() *RateLimiter {
-	log.Println("[INFO] Rate limiter initialized: global_limit=5req/s, burst=5")
-	return &RateLimiter{
-		// Set global limit to 5 requests per second with a burst of 5
-		global: rate.NewLimiter(rate.Limit(5), 5),
-		keys:   make(map[string]*rate.Limiter),
+// NewGlobalLimiter initializes a connection to Redis for distributed rate limiting
+func NewGlobalLimiter(redisAddr string, limit float64, burst int) *RedisLimiter {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+
+	// Verify connection
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Printf("[ERROR] Could not connect to Redis at %s: %v. Global limiting may fail.", redisAddr, err)
+	} else {
+		log.Printf("[INFO] Global Redis Limiter initialized at %s (Limit: %.1f/s)", redisAddr, limit)
+	}
+
+	return &RedisLimiter{
+		client: rdb,
+		limit:  int64(limit),
+		burst:  burst,
 	}
 }
 
-// GinLimit implements the rate limiting middleware for Gin [cite: 13, 19]
-func (rl *RateLimiter) GinLimit() gin.HandlerFunc {
+// GinLimit implements a sliding window counter logic using Redis
+func (rl *RedisLimiter) GinLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 1. Global Rate Limit check [cite: 19]
-		if !rl.global.Allow() {
-			log.Printf("[WARN] Global rate limit exceeded: client_ip=%s, path=%s", c.ClientIP(), c.Request.URL.Path)
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": "Global rate limit exceeded",
-			}) // Returns 429
+		ctx := context.Background()
+
+		// We use a per-second key for the sliding window
+		// Format: rate_limit:2025-12-28T12:01:05
+		now := time.Now()
+		key := "rate_limit:" + now.Format("2006-01-02T15:04:05")
+
+		// Increment the counter for the current second
+		count, err := rl.client.Incr(ctx, key).Result()
+		if err != nil {
+			log.Printf("[ERROR] Redis connection error: %v", err)
+			// Fail-open strategy: allow request if Redis is down, or use c.Abort() to fail-closed
+			c.Next()
 			return
 		}
 
-		// 2. Per-API-Key Rate Limit check [cite: 20]
-		apiKey := c.GetHeader("Authorization")
-		if apiKey != "" {
-			rl.mu.Lock()
-			limiter, exists := rl.keys[apiKey]
-			if !exists {
-				// Default: 5 requests per second per unique API key
-				limiter = rate.NewLimiter(rate.Limit(5), 5)
-				rl.keys[apiKey] = limiter
-				masked := maskAPIKey(apiKey)
-				log.Printf("[INFO] New API key registered for rate limiting: api_key=%s, limit=5req/s", masked)
-			}
-			rl.mu.Unlock()
+		// Set expiration on new keys so they clean up automatically
+		if count == 1 {
+			rl.client.Expire(ctx, key, 2*time.Second)
+		}
 
-			if !limiter.Allow() {
-				masked := maskAPIKey(apiKey)
-				log.Printf("[WARN] API key rate limit exceeded: api_key=%s, client_ip=%s, path=%s", masked, c.ClientIP(), c.Request.URL.Path)
-				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-					"error": "API key rate limit exceeded",
-				}) // Returns 429
-				return
-			}
+		// Check if global limit is exceeded
+		if count > rl.limit {
+			log.Printf("[WARN] Global rate limit exceeded (Redis): key=%s, count=%d", key, count)
+
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":       "Global distributed rate limit exceeded",
+				"retry_after": "1s",
+			})
+			c.Abort()
+			return
 		}
 
 		c.Next()
 	}
-}
-
-// maskAPIKey masks sensitive API key data for logging (shows first 4 and last 4 chars)
-func maskAPIKey(apiKey string) string {
-	if len(apiKey) <= 8 {
-		return "***"
-	}
-	return apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
 }
