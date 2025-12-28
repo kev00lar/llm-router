@@ -84,7 +84,7 @@ Run the full environment locally, including the router and two mock LLM provider
 ### Steps
 
 #### Initialize Go Modules
-```bash
+
 go mod tidy
 
 docker-compose up --build
@@ -96,7 +96,7 @@ Deploy the router to a local Kubernetes cluster using **Minikube** or **Kind**.
 ### Steps
 
 #### Point Docker to the Cluster
-```bash
+
 eval $(minikube docker-env)
 Build the Image
 docker build -t llm-router:latest .

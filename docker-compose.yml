@@ -1,4 +1,19 @@
 services:
+  # Redis for Global Distributed Rate Limiting
+  redis:
+    image: redis:alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    healthcheck:
+      # Ensures Redis is ready to accept commands before dependent services start
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: always
+
+  # The Core Router Service
   router:
     build: 
       context: .
@@ -7,10 +22,15 @@ services:
       - "3000:3000"
     env_file: .env
     depends_on:
-      - redis
-      - mock-a
-      - mock-b
+      redis:
+        condition: service_healthy
+      mock-a:
+        condition: service_started
+      mock-b:
+        condition: service_started
+    restart: always
 
+  # Mock Provider A
   mock-a:
     build:
       context: .
@@ -18,7 +38,9 @@ services:
     container_name: mock-a
     expose:
       - "8080"
+    restart: always
 
+  # Mock Provider B
   mock-b:
     build:
       context: .
@@ -26,9 +48,4 @@ services:
     container_name: mock-b
     expose:
       - "8080"
-
-  redis:
-    image: redis:alpine
-    container_name: redis-cache
-    ports:
-      - "6379:6379"
+    restart: always
