@@ -39,13 +39,11 @@ func NewGlobalLimiter(redisAddr string, limit float64, burst int) *RedisLimiter 
 	}
 }
 
-// GinLimit implements a sliding window counter logic using Redis
 func (rl *RedisLimiter) GinLimit() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := context.Background()
 
 		// We use a per-second key for the sliding window
-		// Format: rate_limit:2025-12-28T12:01:05
 		now := time.Now()
 		key := "rate_limit:" + now.Format("2006-01-02T15:04:05")
 
@@ -53,7 +51,7 @@ func (rl *RedisLimiter) GinLimit() gin.HandlerFunc {
 		count, err := rl.client.Incr(ctx, key).Result()
 		if err != nil {
 			log.Printf("[ERROR] Redis connection error: %v", err)
-			// Fail-open strategy: allow request if Redis is down, or use c.Abort() to fail-closed
+			// Fail-open strategy: allow request if Redis is down
 			c.Next()
 			return
 		}
