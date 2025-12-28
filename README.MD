@@ -19,7 +19,7 @@ This project exposes a **unified OpenAI-compatible API** that intelligently rout
 ## Testing & Validation
 
 ### Postman
-A pre-configured Postman collection is included in the root directory: `llm_router_tests.postman_collection.json`.
+A pre-configured Postman collection is included in the root directory: `postman_collection.json`.
 1. **Import** the file into Postman.
 2. **Environment**: Ensure your router is running at `http://localhost:3000`.
 3. **Requests**:
@@ -85,32 +85,34 @@ graph TD
 
 ---
 ## Folder Structure
-LLM-ROUTER/
-├── admin/                  # Web Dashboard assets (index.html)
-├── cmd/
-│   └── router/
-│       └── main.go         # Service entry point & graceful shutdown logic
-├── internal/
-│   ├── config/
-│   │   └── config.go       # Deterministic weighted selection logic
-│   ├── handler/
-│   │   ├── admin_handler.go  # Handlers for stats, config, and metrics reset
-│   │   └── router_handler.go # Core LLM proxy and failover logic
-│   ├── middleware/
-│   │   └── limit.go        # Redis-backed distributed rate limiter
-│   └── router/
-│       └── router.go       # Route definitions & HTTP client optimization
-├── k8s/                    # Kubernetes manifests (deployments)
-|   ├──deployment.yaml         
-├── mock/
-│   ├── Dockerfile          # Container definition for mock providers
-│   └── main.go             # Mock LLM provider implementation
-├── .env                    # Environment configuration
-├── docker-compose.yml      # Local orchestration stack
-├── Dockerfile              # Container definition for the main Router
-├── go.mod                  # Go module dependencies
-└── locust.py               # Performance & load testing script
-
+```
+    LLM-ROUTER/
+    ├── admin/                  # Web Dashboard assets (index.html)
+    ├── cmd/
+    │   └── router/
+    │       └── main.go         # Service entry point & graceful shutdown logic
+    ├── internal/
+    │   ├── config/
+    │   │   └── config.go       # Deterministic weighted selection logic
+    │   ├── handler/
+    │   │   ├── admin_handler.go  # Handlers for stats, config, and metrics reset
+    │   │   └── router_handler.go # Core LLM proxy and failover logic
+    │   ├── middleware/
+    │   │   └── limit.go        # Redis-backed distributed rate limiter
+    │   └── router/
+    │       └── router.go       # Route definitions & HTTP client optimization
+    ├── k8s/                    # Kubernetes manifests (deployments, services)
+    ├── mock/
+    │   ├── Dockerfile          # Container definition for mock providers
+    │   └── main.go             # Mock LLM provider implementation
+    ├── .env                    # Environment configuration
+    ├── docker-compose.yml      # Local orchestration stack
+    ├── Dockerfile              # Container definition for the main Router
+    ├── go.mod                  # Go module dependencies
+    ├── locust.py               # Performance & load testing script
+    └── postman_collection.json   # Postman collection for API testing
+```
+---
 ## Local Development (Docker Compose)
 
 Run the full environment locally, including the router and two mock LLM providers.
