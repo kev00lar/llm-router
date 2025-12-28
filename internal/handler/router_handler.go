@@ -62,13 +62,13 @@ func (h *RouterHandler) HandleChat(c *gin.Context) {
 	maxAttempts := 3
 	var lastErr error
 
-	for i := 0; i < maxAttempts; i++ {
-		provider := h.Cfg.GetProvider()
+	for i := range maxAttempts {
+		provider := h.Cfg.SelectProvider()
 		if provider == nil {
-			log.Printf("[WARN] Attempt %d/%d: No provider available", i+1, maxAttempts)
-			continue
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No active providers"})
+        	return
 		}
-
+		
 		log.Printf("[INFO] Attempt %d/%d: Routing to %s", i+1, maxAttempts, provider.ID)
 
 		start := time.Now()
@@ -79,9 +79,7 @@ func (h *RouterHandler) HandleChat(c *gin.Context) {
 		resp, err := h.Client.Do(req)
 		duration := time.Since(start)
 
-		// Check for Happy Flow (Success)
 		if err == nil && resp.StatusCode < 500 {
-			// Record Success Metrics
 			RequestDuration.WithLabelValues(provider.ID).Observe(duration.Seconds())
 			HttpRequestsTotal.WithLabelValues(provider.ID, "success").Inc()
 

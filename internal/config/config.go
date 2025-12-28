@@ -1,9 +1,8 @@
 package config
 
 import (
-	"log"
-	"math/rand"
 	"sync"
+	"sync/atomic"
 )
 
 type Provider struct {
@@ -14,54 +13,55 @@ type Provider struct {
 }
 
 type RouterConfig struct {
-	sync.RWMutex
-	Providers []Provider
+	mu           sync.RWMutex
+	Providers    []Provider
+	requestCount uint64 // Used for deterministic selection
 }
 
-// UpdateProviders allows the Admin API to update weights/providers without a restart
-func (c *RouterConfig) UpdateProviders(newProviders []Provider) {
-	c.Lock()
-	defer c.Unlock()
+// SelectProvider implements a deterministic weighted selection
+func (s *RouterConfig) SelectProvider() *Provider {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	oldCount := len(c.Providers)
-	c.Providers = newProviders
-	log.Printf("[INFO] Providers updated: old_count=%d, new_count=%d", oldCount, len(newProviders))
-}
-
-// GetProviders returns a thread-safe copy for the Admin Stats API
-func (c *RouterConfig) GetProviders() []Provider {
-	c.RLock()
-	defer c.RUnlock()
-	
-	dst := make([]Provider, len(c.Providers))
-	copy(dst, c.Providers)
-	return dst
-}
-
-// GetProvider selects a provider based on weighted random selection
-func (c *RouterConfig) GetProvider() *Provider {
-	c.RLock()
-	defer c.RUnlock()
-
-	var active []Provider
-	totalWeight := 0.0
-	for _, p := range c.Providers {
+	var activeProviders []Provider
+	for _, p := range s.Providers {
 		if p.Active {
-			active = append(active, p)
-			totalWeight += p.Weight
+			activeProviders = append(activeProviders, p)
 		}
 	}
 
-	if len(active) == 0 {
+	if len(activeProviders) == 0 {
 		return nil
 	}
 
-	r := rand.Float64() * totalWeight
-	for i := range active {
-		r -= active[i].Weight
-		if r <= 0 {
-			return &active[i]
+	// 1. Increment total requests atomically
+	current := atomic.AddUint64(&s.requestCount, 1)
+	
+	// 2. Use modulo to find position in a 100-slot window
+	// This ensures that over 100 requests, the distribution matches weights exactly.
+	pos := current % 100
+
+	var cumulative float64
+	for _, p := range activeProviders {
+		cumulative += p.Weight
+		if float64(pos) < cumulative {
+			return &p
 		}
 	}
-	return &active[0]
+
+	return &activeProviders[0]
+}
+
+func (s *RouterConfig) UpdateProviders(newProviders []Provider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Providers = newProviders
+	// Reset counter on config change to start fresh window
+	atomic.StoreUint64(&s.requestCount, 0)
+}
+
+func (s *RouterConfig) GetProviders() []Provider {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Providers
 }
